@@ -24,7 +24,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- PDF生成エンジン ---
+# --- PDF生成エンジン（日本語対応版） ---
 def generate_pdf(data):
     filepath = "PTA_Output.pdf"
     c = canvas.Canvas(filepath, pagesize=A4)
@@ -40,6 +40,7 @@ def generate_pdf(data):
             f_main = "Helvetica"
     else:
         f_main = "Helvetica"
+    
     c.setFont(f_main, 18)
     c.drawCentredString(105*mm, 280*mm, f"PTA {data['doc_type']}")
     c.line(20*mm, 275*mm, 190*mm, 275*mm)
@@ -61,29 +62,46 @@ def generate_pdf(data):
 
 # --- メイン処理 ---
 init_db()
-st.title("📱 PTAクラウド支部 Ver.2.0")
+st.title("📱 PTAクラウド支部 Ver.2.1")
 
-# セッション状態（編集中のデータを保持）
+# 状態管理（編集対象のIDを保持）
 if 'edit_id' not in st.session_state:
     st.session_state.edit_id = None
 
-tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴"])
+tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴・管理"])
 
 with tab2:
-    st.subheader("過去の記録一覧")
+    st.subheader("保存済みデータ一覧")
     conn = sqlite3.connect("PTA_database.db")
     df = pd.read_sql_query("SELECT * FROM notes ORDER BY id DESC", conn)
     conn.close()
     
     if not df.empty:
-        # 編集したい行を選択
-        selected_event = st.selectbox("編集したい行事を選択してくれ", df['event'].tolist(), index=None, placeholder="行事を選んで編集開始...")
+        # 編集・削除対象の選択
+        # セレクトボックスにIDと行事名を表示して選びやすくする
+        event_options = {f"ID:{row['id']} - {row['event']}": row['id'] for _, row in df.iterrows()}
+        selected_key = st.selectbox("操作したいデータを選択", list(event_options.keys()), index=None, placeholder="データを選択...")
         
-        if selected_event:
-            row = df[df['event'] == selected_event].iloc[0]
-            if st.button("🔧 このデータを編集モードで読み込む"):
-                st.session_state.edit_id = int(row['id'])
-                st.success(f"ID:{st.session_state.edit_id} を読み込んだぜ！『入力・編集』タブへ移動してくれ。")
+        if selected_key:
+            target_id = event_options[selected_key]
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("🔧 編集モードで読み込む", use_container_width=True):
+                    st.session_state.edit_id = target_id
+                    st.success(f"ID:{target_id} を読み込んだぜ！『入力・編集』タブへGO！")
+            
+            with col_b:
+                # 削除は間違い防止のために「本当に消す？」チェックを入れる
+                if st.button("🗑️ このデータを完全削除", type="primary", use_container_width=True):
+                    conn = sqlite3.connect("PTA_database.db")
+                    cursor = conn.cursor()
+                    cursor.execute(f"DELETE FROM notes WHERE id={target_id}")
+                    conn.commit()
+                    conn.close()
+                    st.session_state.edit_id = None # 編集中のやつだったら解除
+                    st.warning(f"ID:{target_id} を抹消したぜ。")
+                    st.rerun()
         
         st.divider()
         st.dataframe(df[['id', 'date', 'event', 'user']], use_container_width=True, hide_index=True)
@@ -91,10 +109,10 @@ with tab2:
         st.write("まだデータがないぜ。")
 
 with tab1:
-    # 編集モードの判定
     is_edit = st.session_state.edit_id is not None
+    
     if is_edit:
-        st.info(f"💡 現在、ID:{st.session_state.edit_id} を編集してるぜ。")
+        st.info(f"💡 現在、ID:{st.session_state.edit_id} を編集中だぜ。")
         conn = sqlite3.connect("PTA_database.db")
         cur_data = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn).iloc[0]
         conn.close()
@@ -104,11 +122,15 @@ with tab1:
     else:
         st.info("🆕 新規作成モードだ。")
 
-    # 入力フォーム（編集モードなら既存データを入れる）
+    # --- 入力フォーム ---
     doc_type = st.selectbox("書類種別", ["議事録", "備忘録"], index=0 if not is_edit else (0 if cur_data['doc_type']=="議事録" else 1))
+    
     user_list = ["小此木", "澤田", "寺山"]
-    user_idx = user_list.index(cur_data['user']) if is_edit and cur_data['user'] in user_list else 0
-    user = st.selectbox("担当者", user_list, index=user_idx)
+    # 既存のユーザーがリストにあるかチェックして初期値を設定
+    default_user_idx = 0
+    if is_edit and cur_data['user'] in user_list:
+        default_user_idx = user_list.index(cur_data['user'])
+    user = st.selectbox("担当者", user_list, index=default_user_idx)
     
     date_val = datetime.strptime(cur_data['date'], '%Y/%m/%d') if is_edit else datetime.now()
     date = st.date_input("開催日", date_val)
@@ -125,40 +147,28 @@ with tab1:
 
     st.divider()
 
+    # --- アクションボタン ---
     col1, col2 = st.columns(2)
     with col1:
-        btn_label = "🆙 上書き保存" if is_edit else "💾 新規保存"
-        if st.button(btn_label):
+        if st.button("🆙 上書き保存" if is_edit else "💾 新規保存", use_container_width=True):
             if event:
                 conn = sqlite3.connect("PTA_database.db")
                 cursor = conn.cursor()
                 if is_edit:
                     cursor.execute("""UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?""",
                                    (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution, st.session_state.edit_id))
-                    st.success("データを更新したぜ！")
+                    st.success("アップデート完了だ！")
                 else:
                     cursor.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", 
                                    (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution))
-                    st.success("新しく保存したぜ！")
-                conn.commit()
-                conn.close()
+                    st.success("新規登録したぜ！")
+                conn.commit(); conn.close()
             else:
-                st.warning("行事名は必須だぜ！")
+                st.error("行事名がないと保存できないぜ。")
 
     with col2:
-        if st.button("📄 PDF準備"):
+        if st.button("📄 PDF準備", use_container_width=True):
             data = {"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": time, "event": event, "location": location, "dress": dress, "person": person, "participants": participants, "caution": caution}
             pdf_path = generate_pdf(data)
             with open(pdf_path, "rb") as f:
-                st.download_button("📥 PDF保存", f, file_name=f"PTA_{event}.pdf")
-
-    if is_edit:
-        st.divider()
-        if st.button("🗑️ このデータを完全に削除する", type="secondary"):
-            conn = sqlite3.connect("PTA_database.db")
-            cursor = conn.cursor()
-            cursor.execute(f"DELETE FROM notes WHERE id={st.session_state.edit_id}")
-            conn.commit(); conn.close()
-            st.session_state.edit_id = None
-            st.warning("削除したぜ。")
-            st.rerun()
+                st.download_button("📥 PDF保存", f, file_name=f"PTA_{event}.pdf", use_container_width=True)
