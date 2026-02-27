@@ -17,7 +17,6 @@ DB_FILE = "PTA_database.db"
 # --- ページ設定 ---
 st.set_page_config(page_title="PTAクラウド支部", layout="centered")
 
-# --- ログインチェック（修正版） ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔐 PTAクラウド支部 入室管理")
@@ -33,7 +32,6 @@ def check_password():
         return False
     return True
 
-# --- データベース初期化 ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -44,13 +42,14 @@ def init_db():
     )''')
     conn.commit(); conn.close()
 
-# --- PDF生成エンジン ---
+# --- PDF生成エンジン（複数ページ対応版） ---
 def generate_pdf(data):
     filepath = "PTA_Output.pdf"
     c = canvas.Canvas(filepath, pagesize=A4)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     font_path = os.path.join(base_dir, "msgothic.ttc")
     font_name = "MS-Gothic-Web"
+    
     if os.path.exists(font_path):
         try:
             pdfmetrics.registerFont(TTFont(font_name, font_path))
@@ -58,41 +57,64 @@ def generate_pdf(data):
         except: f_main = "Helvetica"
     else: f_main = "Helvetica"
     
-    c.setFont(f_main, 18)
-    c.drawCentredString(105*mm, 280*mm, f"PTA {data['doc_type']}")
-    c.line(20*mm, 275*mm, 190*mm, 275*mm)
-    c.setFont(f_main, 11)
+    # ページ描画関数
+    def draw_header(canvas_obj, page_num):
+        canvas_obj.setFont(f_main, 18)
+        canvas_obj.drawCentredString(105*mm, 280*mm, f"PTA {data['doc_type']} (Page {page_num})")
+        canvas_obj.line(20*mm, 275*mm, 190*mm, 275*mm)
+        canvas_obj.setFont(f_main, 11)
+
+    page_count = 1
+    draw_header(c, page_count)
+    
     y = 265
     items = [
         ("入力者", data['user']), ("開催日", data['date']), ("時間", data['time']), 
         ("行事内容", data['event']), ("開催場所", data['location']), 
         ("服装・持参物", data['dress']), ("同行者", data['person']), ("参加者", data['participants'])
     ]
+    
     for label, val in items:
         if val:
             c.drawString(25*mm, y*mm, f"【{label}】: {val}")
             y -= 10
+            
     c.drawString(25*mm, y*mm, "【内容・注意事項・申し送り】:")
-    t = c.beginText(30*mm, (y-8)*mm); t.setFont(f_main, 10); t.setLeading(15)
+    y -= 8
+    
+    # 本文の書き込み（ここが複数ページ対応！）
+    c.setFont(f_main, 10)
+    lines = []
     caution_text = data['caution'] if data['caution'] else ""
-    for line in caution_text.splitlines():
-        for i in range(0, len(line), 35): t.textLine(line[i:i+35])
-    c.drawText(t); c.showPage(); c.save()
+    for raw_line in caution_text.splitlines():
+        # 1行を35文字ずつに分割
+        for i in range(0, len(raw_line), 35):
+            lines.append(raw_line[i:i+35])
+            
+    for line in lines:
+        if y < 20: # ページの下端に来たら
+            c.showPage() # 現在のページを確定
+            page_count += 1
+            draw_header(c, page_count) # 新しいページにヘッダーを描画
+            y = 265
+            c.setFont(f_main, 10) # フォントを戻す
+            
+        c.drawString(30*mm, y*mm, line)
+        y -= 6 # 行間
+    
+    c.showPage()
+    c.save()
     return filepath
 
-# --- メイン処理 ---
+# --- メイン処理（Ver.3.4と同じ） ---
 if check_password():
     init_db()
-    
-    # 修正：セッション状態を確認してからサイドバーを表示
     if "current_user_id" in st.session_state:
         st.sidebar.write(f"Login ID: {st.session_state['current_user_id']}")
-    
     if st.sidebar.button("ログアウト"):
-        st.session_state.clear()
-        st.rerun()
+        st.session_state.clear(); st.rerun()
 
-    st.title("📱 PTAクラウド支部 Ver.3.4")
+    st.title("📱 PTAクラウド支部 Ver.3.5")
     tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴・管理"])
 
     if 'edit_id' not in st.session_state: st.session_state.edit_id = None
@@ -112,8 +134,7 @@ if check_password():
                 c1, c2 = st.columns(2)
                 with c1:
                     if st.button("🔧 編集読み込み", use_container_width=True):
-                        st.session_state.edit_id = target_id
-                        st.success("読み込んだぜ！タブを移動してくれ。")
+                        st.session_state.edit_id = target_id; st.success("読み込み完了！")
                 with c2:
                     if st.button("🗑️ データを抹消", type="primary", use_container_width=True):
                         conn = sqlite3.connect(DB_FILE); cur = conn.cursor()
@@ -122,31 +143,24 @@ if check_password():
             st.divider()
             st.dataframe(df[['id', 'date', 'event', 'user']], use_container_width=True, hide_index=True)
             
-            # 会長専用バックアップ
             if "current_user_id" in st.session_state and st.session_state['current_user_id'] == ADMIN_ID:
-                with st.expander("🛠 管理者専用ツール（バックアップ）"):
+                with st.expander("🛠 管理者専用ツール"):
                     if os.path.exists(DB_FILE):
                         with open(DB_FILE, "rb") as f:
-                            st.download_button("📥 DBファイルを保存", f, file_name=f"PTA_Backup.db", mime="application/octet-stream", use_container_width=True)
+                            st.download_button("📥 DBバックアップ", f, file_name=f"PTA_Backup.db", mime="application/octet-stream", use_container_width=True)
         else: st.write("データなし。")
 
     with tab1:
         is_edit = st.session_state.edit_id is not None
         if is_edit:
-            st.info(f"💡 ID:{st.session_state.edit_id} を編集中")
+            st.info(f"💡 ID:{st.session_state.edit_id} 編集中")
             conn = sqlite3.connect(DB_FILE)
-            # データの安全な読み込み
             cur_data_df = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn)
             conn.close()
-            if not cur_data_df.empty:
-                cur_data = cur_data_df.iloc[0]
-            else:
-                st.session_state.edit_id = None
-                st.rerun()
-            if st.button("❌ 編集キャンセル"):
-                st.session_state.edit_id = None; st.rerun()
+            if not cur_data_df.empty: cur_data = cur_data_df.iloc[0]
+            else: st.session_state.edit_id = None; st.rerun()
+            if st.button("❌ キャンセル"): st.session_state.edit_id = None; st.rerun()
         
-        # 入力フォーム（Ver.3.3と同じ全項目）
         doc_type = st.selectbox("書類", ["議事録", "備忘録"], index=0 if not is_edit else (0 if cur_data['doc_type']=="議事録" else 1))
         user_list = ["小此木", "澤田", "寺山"]
         user_idx = user_list.index(cur_data['user']) if is_edit and cur_data['user'] in user_list else 0
@@ -172,12 +186,9 @@ if check_password():
                 if event:
                     conn = sqlite3.connect(DB_FILE); cur = conn.cursor()
                     v = (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution)
-                    if is_edit:
-                        cur.execute("UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?", v + (st.session_state.edit_id,))
-                    else:
-                        cur.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
+                    if is_edit: cur.execute("UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?", v + (st.session_state.edit_id,))
+                    else: cur.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
                     conn.commit(); conn.close(); st.success("保存完了！")
-                else: st.error("行事名を入れてくれ。")
         with c2:
             if st.button("📄 PDF準備", use_container_width=True):
                 d = {"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": time, "event": event, "location": location, "dress": dress, "person": person, "participants": participants, "caution": caution}
