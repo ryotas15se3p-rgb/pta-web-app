@@ -10,17 +10,14 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 
 # --- 🔐 セキュリティ設定 ---
-# ここを変えれば会長専用の鍵になるぜ！
-ADMIN_ID = "admin"        # 管理者（会長）ID
-ADMIN_PASS = "pta700"     # 管理者パスワード
-
-# 一般役員用などの追加も可能だけど、今はこれで行くぜ
+ADMIN_ID = "admin"
+ADMIN_PASS = "pta700"
 DB_FILE = "PTA_database.db"
 
 # --- ページ設定 ---
 st.set_page_config(page_title="PTAクラウド支部", layout="centered")
 
-# --- ログインチェック（IDを保持するように改良） ---
+# --- ログインチェック（修正版） ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔐 PTAクラウド支部 入室管理")
@@ -29,7 +26,7 @@ def check_password():
         if st.button("ログイン"):
             if u == ADMIN_ID and p == ADMIN_PASS:
                 st.session_state["password_correct"] = True
-                st.session_state["current_user_id"] = u # ログインIDを記録
+                st.session_state["current_user_id"] = u
                 st.rerun()
             else:
                 st.error("IDかパスワードが違うぜ。")
@@ -47,7 +44,7 @@ def init_db():
     )''')
     conn.commit(); conn.close()
 
-# --- PDF生成エンジン（フルスペック） ---
+# --- PDF生成エンジン ---
 def generate_pdf(data):
     filepath = "PTA_Output.pdf"
     c = canvas.Canvas(filepath, pagesize=A4)
@@ -86,13 +83,19 @@ def generate_pdf(data):
 # --- メイン処理 ---
 if check_password():
     init_db()
-    st.sidebar.write(f"Login ID: {st.session_state['current_user_id']}")
+    
+    # 修正：セッション状態を確認してからサイドバーを表示
+    if "current_user_id" in st.session_state:
+        st.sidebar.write(f"Login ID: {st.session_state['current_user_id']}")
+    
     if st.sidebar.button("ログアウト"):
         st.session_state.clear()
         st.rerun()
 
-    st.title("📱 PTAクラウド支部 Ver.3.3")
+    st.title("📱 PTAクラウド支部 Ver.3.4")
     tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴・管理"])
+
+    if 'edit_id' not in st.session_state: st.session_state.edit_id = None
 
     with tab2:
         st.subheader("保存済みデータ一覧")
@@ -119,39 +122,37 @@ if check_password():
             st.divider()
             st.dataframe(df[['id', 'date', 'event', 'user']], use_container_width=True, hide_index=True)
             
-            # --- 🔐 ここが管理者限定の「隠し金庫」 ---
-            if st.session_state['current_user_id'] == ADMIN_ID:
+            # 会長専用バックアップ
+            if "current_user_id" in st.session_state and st.session_state['current_user_id'] == ADMIN_ID:
                 with st.expander("🛠 管理者専用ツール（バックアップ）"):
-                    st.write("このボタンは会長（admin）にしか見えてないぜ。")
                     if os.path.exists(DB_FILE):
                         with open(DB_FILE, "rb") as f:
-                            st.download_button(
-                                "📥 DBファイルをスマホに保存", 
-                                f, 
-                                file_name=f"PTA_Backup_{datetime.now().strftime('%Y%m%d')}.db", 
-                                mime="application/octet-stream", 
-                                use_container_width=True
-                            )
+                            st.download_button("📥 DBファイルを保存", f, file_name=f"PTA_Backup.db", mime="application/octet-stream", use_container_width=True)
         else: st.write("データなし。")
 
     with tab1:
-        if 'edit_id' not in st.session_state: st.session_state.edit_id = None
         is_edit = st.session_state.edit_id is not None
-        
         if is_edit:
             st.info(f"💡 ID:{st.session_state.edit_id} を編集中")
             conn = sqlite3.connect(DB_FILE)
-            cur_data = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn).iloc[0]
+            # データの安全な読み込み
+            cur_data_df = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn)
             conn.close()
+            if not cur_data_df.empty:
+                cur_data = cur_data_df.iloc[0]
+            else:
+                st.session_state.edit_id = None
+                st.rerun()
             if st.button("❌ 編集キャンセル"):
                 st.session_state.edit_id = None; st.rerun()
-
-        # フルスペック入力フォーム
+        
+        # 入力フォーム（Ver.3.3と同じ全項目）
         doc_type = st.selectbox("書類", ["議事録", "備忘録"], index=0 if not is_edit else (0 if cur_data['doc_type']=="議事録" else 1))
         user_list = ["小此木", "澤田", "寺山"]
-        user = st.selectbox("担当", user_list, index=user_list.index(cur_data['user']) if is_edit and cur_data['user'] in user_list else 0)
+        user_idx = user_list.index(cur_data['user']) if is_edit and cur_data['user'] in user_list else 0
+        user = st.selectbox("担当", user_list, index=user_idx)
         date = st.date_input("日付", datetime.strptime(cur_data['date'], '%Y/%m/%d') if is_edit else datetime.now())
-        event = st.text_input("行事名・件名", value=cur_data['event'] if is_edit else "")
+        event = st.text_input("行事名", value=cur_data['event'] if is_edit else "")
         
         c_l, c_r = st.columns(2)
         with c_l:
@@ -162,26 +163,24 @@ if check_password():
             person = st.text_input("同行者", value=cur_data['person'] if is_edit else "")
         
         participants = st.text_input("参加人数", value=cur_data['participants'] if is_edit else "")
-        caution = st.text_area("内容・申し送り", height=200, value=cur_data['caution'] if is_edit else "")
+        caution = st.text_area("内容", height=200, value=cur_data['caution'] if is_edit else "")
 
         st.divider()
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("💾 上書き保存" if is_edit else "💾 新規保存", use_container_width=True):
+            if st.button("💾 保存", use_container_width=True):
                 if event:
                     conn = sqlite3.connect(DB_FILE); cur = conn.cursor()
-                    vals = (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution)
+                    v = (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution)
                     if is_edit:
-                        cur.execute("UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?", vals + (st.session_state.edit_id,))
-                        st.success("更新完了！")
+                        cur.execute("UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?", v + (st.session_state.edit_id,))
                     else:
-                        cur.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", vals)
-                        st.success("保存完了！")
-                    conn.commit(); conn.close()
+                        cur.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", v)
+                    conn.commit(); conn.close(); st.success("保存完了！")
                 else: st.error("行事名を入れてくれ。")
         with c2:
             if st.button("📄 PDF準備", use_container_width=True):
-                data = {"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": time, "event": event, "location": location, "dress": dress, "person": person, "participants": participants, "caution": caution}
-                pdf_path = generate_pdf(data)
+                d = {"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": time, "event": event, "location": location, "dress": dress, "person": person, "participants": participants, "caution": caution}
+                pdf_path = generate_pdf(d)
                 with open(pdf_path, "rb") as f:
                     st.download_button("📥 PDF保存", f, file_name=f"PTA_{event}.pdf", use_container_width=True)
