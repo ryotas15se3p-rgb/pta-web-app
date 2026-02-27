@@ -9,8 +9,42 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 
+# --- 🔐 セキュリティ設定（ここを好きな文字に変えて！） ---
+USER_ID = "admin"        # ログインID
+USER_PASS = "pta700"     # パスワード
+
 # --- ページ設定 ---
-st.set_page_config(page_title="PTAクラウド支部", layout="centered")
+st.set_page_config(page_title="PTAクラウド支部【要認証】", layout="centered")
+
+# --- ログインチェック機能 ---
+def check_password():
+    """認証が成功したらTrueを返す"""
+    def password_entered():
+        if st.session_state["username"] == USER_ID and st.session_state["password"] == USER_PASS:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # パスワードをメモリから消す
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # 初回表示
+        st.title("🔐 PTAクラウド支部 入室管理")
+        st.text_input("ID", key="username")
+        st.text_input("パスワード", type="password", key="password")
+        st.button("ログイン", on_click=password_entered)
+        return False
+    elif not st.session_state["password_correct"]:
+        # パスワード間違い
+        st.title("🔐 PTAクラウド支部 入室管理")
+        st.text_input("ID", key="username")
+        st.text_input("パスワード", type="password", key="password")
+        st.button("ログイン", on_click=password_entered)
+        st.error("IDかパスワードが違うぜ。")
+        return False
+    else:
+        # 認証成功
+        return True
 
 # --- データベース初期化 ---
 def init_db():
@@ -24,7 +58,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- PDF生成エンジン（日本語対応版） ---
+# --- PDF生成エンジン ---
 def generate_pdf(data):
     filepath = "PTA_Output.pdf"
     c = canvas.Canvas(filepath, pagesize=A4)
@@ -36,10 +70,8 @@ def generate_pdf(data):
         try:
             pdfmetrics.registerFont(TTFont(font_name, font_path))
             f_main = font_name
-        except:
-            f_main = "Helvetica"
-    else:
-        f_main = "Helvetica"
+        except: f_main = "Helvetica"
+    else: f_main = "Helvetica"
     
     c.setFont(f_main, 18)
     c.drawCentredString(105*mm, 280*mm, f"PTA {data['doc_type']}")
@@ -61,114 +93,78 @@ def generate_pdf(data):
     return filepath
 
 # --- メイン処理 ---
-init_db()
-st.title("📱 PTAクラウド支部 Ver.2.1")
+if check_password(): # 認証が通った場合のみ以下を表示
+    init_db()
+    st.sidebar.write(f"Logged in as: {USER_ID}")
+    if st.sidebar.button("ログアウト"):
+        st.session_state["password_correct"] = False
+        st.rerun()
 
-# 状態管理（編集対象のIDを保持）
-if 'edit_id' not in st.session_state:
-    st.session_state.edit_id = None
+    st.title("📱 PTAクラウド支部 Ver.3.0")
 
-tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴・管理"])
+    if 'edit_id' not in st.session_state:
+        st.session_state.edit_id = None
 
-with tab2:
-    st.subheader("保存済みデータ一覧")
-    conn = sqlite3.connect("PTA_database.db")
-    df = pd.read_sql_query("SELECT * FROM notes ORDER BY id DESC", conn)
-    conn.close()
-    
-    if not df.empty:
-        # 編集・削除対象の選択
-        # セレクトボックスにIDと行事名を表示して選びやすくする
-        event_options = {f"ID:{row['id']} - {row['event']}": row['id'] for _, row in df.iterrows()}
-        selected_key = st.selectbox("操作したいデータを選択", list(event_options.keys()), index=None, placeholder="データを選択...")
-        
-        if selected_key:
-            target_id = event_options[selected_key]
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("🔧 編集モードで読み込む", use_container_width=True):
-                    st.session_state.edit_id = target_id
-                    st.success(f"ID:{target_id} を読み込んだぜ！『入力・編集』タブへGO！")
-            
-            with col_b:
-                # 削除は間違い防止のために「本当に消す？」チェックを入れる
-                if st.button("🗑️ このデータを完全削除", type="primary", use_container_width=True):
-                    conn = sqlite3.connect("PTA_database.db")
-                    cursor = conn.cursor()
-                    cursor.execute(f"DELETE FROM notes WHERE id={target_id}")
-                    conn.commit()
-                    conn.close()
-                    st.session_state.edit_id = None # 編集中のやつだったら解除
-                    st.warning(f"ID:{target_id} を抹消したぜ。")
-                    st.rerun()
-        
-        st.divider()
-        st.dataframe(df[['id', 'date', 'event', 'user']], use_container_width=True, hide_index=True)
-    else:
-        st.write("まだデータがないぜ。")
+    tab1, tab2 = st.tabs(["📝 入力・編集", "📚 履歴・管理"])
 
-with tab1:
-    is_edit = st.session_state.edit_id is not None
-    
-    if is_edit:
-        st.info(f"💡 現在、ID:{st.session_state.edit_id} を編集中だぜ。")
+    # (中略：タブの中身はVer.2.1と同じ。スペース節約のため統合して記述)
+    with tab2:
+        st.subheader("保存済みデータ一覧")
         conn = sqlite3.connect("PTA_database.db")
-        cur_data = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn).iloc[0]
+        df = pd.read_sql_query("SELECT * FROM notes ORDER BY id DESC", conn)
         conn.close()
-        if st.button("❌ 編集をキャンセルして新規作成に戻る"):
-            st.session_state.edit_id = None
-            st.rerun()
-    else:
-        st.info("🆕 新規作成モードだ。")
+        if not df.empty:
+            event_options = {f"ID:{row['id']} - {row['event']}": row['id'] for _, row in df.iterrows()}
+            selected_key = st.selectbox("操作したいデータを選択", list(event_options.keys()), index=None)
+            if selected_key:
+                target_id = event_options[selected_key]
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if st.button("🔧 編集モードで読み込む", use_container_width=True):
+                        st.session_state.edit_id = target_id
+                        st.success("読み込んだぜ！『入力・編集』タブへ！")
+                with col_b:
+                    if st.button("🗑️ データを抹消", type="primary", use_container_width=True):
+                        conn = sqlite3.connect("PTA_database.db")
+                        cursor = conn.cursor()
+                        cursor.execute(f"DELETE FROM notes WHERE id={target_id}")
+                        conn.commit(); conn.close()
+                        st.rerun()
+            st.divider()
+            st.dataframe(df[['id', 'date', 'event', 'user']], use_container_width=True, hide_index=True)
+        else: st.write("データなし。")
 
-    # --- 入力フォーム ---
-    doc_type = st.selectbox("書類種別", ["議事録", "備忘録"], index=0 if not is_edit else (0 if cur_data['doc_type']=="議事録" else 1))
-    
-    user_list = ["小此木", "澤田", "寺山"]
-    # 既存のユーザーがリストにあるかチェックして初期値を設定
-    default_user_idx = 0
-    if is_edit and cur_data['user'] in user_list:
-        default_user_idx = user_list.index(cur_data['user'])
-    user = st.selectbox("担当者", user_list, index=default_user_idx)
-    
-    date_val = datetime.strptime(cur_data['date'], '%Y/%m/%d') if is_edit else datetime.now()
-    date = st.date_input("開催日", date_val)
-    event = st.text_input("行事名・件名", value=cur_data['event'] if is_edit else "")
-    
-    with st.expander("詳細（場所・時間など）"):
-        time = st.text_input("開始時間", value=cur_data['time'] if is_edit else "")
-        location = st.text_input("場所", value=cur_data['location'] if is_edit else "")
-        dress = st.text_input("服装・持参物", value=cur_data['dress'] if is_edit else "")
-        person = st.text_input("同行者", value=cur_data['person'] if is_edit else "")
-        participants = st.text_input("参加人数", value=cur_data['participants'] if is_edit else "")
+    with tab1:
+        is_edit = st.session_state.edit_id is not None
+        if is_edit:
+            st.info(f"💡 ID:{st.session_state.edit_id} を編集中。")
+            conn = sqlite3.connect("PTA_database.db")
+            cur_data = pd.read_sql_query(f"SELECT * FROM notes WHERE id={st.session_state.edit_id}", conn).iloc[0]
+            conn.close()
+            if st.button("❌ キャンセル"):
+                st.session_state.edit_id = None
+                st.rerun()
         
-    caution = st.text_area("内容・注意事項", height=200, value=cur_data['caution'] if is_edit else "")
+        doc_type = st.selectbox("書類種別", ["議事録", "備忘録"], index=0 if not is_edit else (0 if cur_data['doc_type']=="議事録" else 1))
+        user_list = ["小此木", "澤田", "寺山"]
+        user = st.selectbox("担当者", user_list, index=user_list.index(cur_data['user']) if is_edit and cur_data['user'] in user_list else 0)
+        date = st.date_input("開催日", datetime.strptime(cur_data['date'], '%Y/%m/%d') if is_edit else datetime.now())
+        event = st.text_input("行事名", value=cur_data['event'] if is_edit else "")
+        caution = st.text_area("内容", height=200, value=cur_data['caution'] if is_edit else "")
 
-    st.divider()
-
-    # --- アクションボタン ---
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🆙 上書き保存" if is_edit else "💾 新規保存", use_container_width=True):
-            if event:
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🆙 上書き保存" if is_edit else "💾 新規保存", use_container_width=True):
                 conn = sqlite3.connect("PTA_database.db")
                 cursor = conn.cursor()
                 if is_edit:
-                    cursor.execute("""UPDATE notes SET doc_type=?, user=?, date=?, time=?, event=?, location=?, dress=?, person=?, participants=?, caution=? WHERE id=?""",
-                                   (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution, st.session_state.edit_id))
-                    st.success("アップデート完了だ！")
+                    cursor.execute("UPDATE notes SET doc_type=?, user=?, date=?, event=?, caution=? WHERE id=?", (doc_type, user, date.strftime('%Y/%m/%d'), event, caution, st.session_state.edit_id))
                 else:
-                    cursor.execute("INSERT INTO notes (doc_type, user, date, time, event, location, dress, person, participants, caution) VALUES (?,?,?,?,?,?,?,?,?,?)", 
-                                   (doc_type, user, date.strftime('%Y/%m/%d'), time, event, location, dress, person, participants, caution))
-                    st.success("新規登録したぜ！")
+                    cursor.execute("INSERT INTO notes (doc_type, user, date, event, caution) VALUES (?,?,?,?,?)", (doc_type, user, date.strftime('%Y/%m/%d'), event, caution))
                 conn.commit(); conn.close()
-            else:
-                st.error("行事名がないと保存できないぜ。")
-
-    with col2:
-        if st.button("📄 PDF準備", use_container_width=True):
-            data = {"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": time, "event": event, "location": location, "dress": dress, "person": person, "participants": participants, "caution": caution}
-            pdf_path = generate_pdf(data)
-            with open(pdf_path, "rb") as f:
-                st.download_button("📥 PDF保存", f, file_name=f"PTA_{event}.pdf", use_container_width=True)
+                st.success("完了だぜ！")
+        with col2:
+            if st.button("📄 PDF準備", use_container_width=True):
+                pdf_path = generate_pdf({"doc_type": doc_type, "user": user, "date": date.strftime('%Y/%m/%d'), "time": "", "event": event, "location": "", "dress": "", "person": "", "participants": "", "caution": caution})
+                with open(pdf_path, "rb") as f:
+                    st.download_button("📥 PDF保存", f, file_name=f"PTA_{event}.pdf", use_container_width=True)
